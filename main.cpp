@@ -1,12 +1,25 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <alloca.h>
+#include <iostream>
+#include <fstream>
+#include <string>
 
 #ifdef APPLE
 #include <OpenCL/cl.h>
 #else
 #include <CL/cl.h>
 #endif
+
+#define CHECK_ERROR(ERR, PARAM)	\
+	if(ERR != CL_SUCCESS) {	\
+		fprintf(stderr, "Unable to obtain OpenCL info for %s, error happened at\t%s: %d\n", PARAM, __FILE__, __LINE__);	\
+		exit(1);			\
+	}
+
+typedef unsigned char uchar;
+typedef unsigned int uint;
+using namespace std;
 
 void displayDeviceDetails(cl_device_id id, cl_device_info param_name, const char* paramNameAsStr) {
 	cl_int error = 0;
@@ -154,7 +167,7 @@ void displayPlatformInfo(cl_platform_id id, cl_platform_info param_name, const c
 }
 
 void clinfo() {
-	printf("[-] %s: %d\n", __func__, __LINE__);
+	printf("\n[-] %s: %d\n", __func__, __LINE__);
 
 	// platform
 	cl_platform_id* platforms;
@@ -168,7 +181,6 @@ void clinfo() {
 	}
 
 	platforms = (cl_platform_id*) alloca(sizeof(cl_platform_id) * numOfPlatforms);
-	printf("\n");
 	printf("Number of OpenCL platforms found:\t\t%d\n", numOfPlatforms);
 
 	error = clGetPlatformIDs(numOfPlatforms, platforms, NULL);
@@ -190,8 +202,217 @@ void clinfo() {
 	}
 }
 
+void callback(const char* errinfo, const void*, size_t, void*) {
+	cout << "Context callback:\t" << errinfo << endl;
+}
+
+//void loadProgramSource(const char* file_path, char* buffer, size_t& size) {
+//	//ifstream in(_T(file_path), std::ios_base::binary);
+//	ifstream in((file_path), std::ios_base::binary);
+//	if(!in.good())
+//		return;
+//
+//	// get file length
+//	in.seekg(0, std::ios_base::end);
+//	size_t length = in.tellg();
+//
+//	// read program source
+//	char data[length + 1];
+//	in.seekg(0, std::ios_base::beg);
+//	in.read(&data[0], length);
+//	data[length] = 0;
+//
+//	// return
+//	size = length;
+//	//buffer = &data[0];
+//	buffer = data;
+//}
+
+void loadProgramSource(const char** filePaths, size_t number, char** buffer, size_t* sizes) {
+	for(size_t i=0; i<number; ++i) {
+		FILE* file = fopen(filePaths[i], "r");
+		if(file == NULL) {
+			perror("Couldn't read the program file");
+			exit(1);
+		}
+
+		fseek(file, 0, SEEK_END);
+		sizes[i] = ftell(file);
+		rewind(file);
+		buffer[i] = new char[sizes[i] + 1];
+		fread(buffer[i], sizeof(char), sizes[i], file);
+		buffer[i][sizes[i]] = 0;
+
+		//cout << "---> loadProgramSource:\n" << buffer << endl;
+		fclose(file);
+	}
+}
+
+//int ReadSourceFromFile(const char* filePath, char** buffer, size_t& size) {
+//	int error = CL_SUCCESS;
+//
+//	FILE* fp = NULL;
+//	fopen_s(&fp, filePath, "rb");
+//	if(fp == NULL) {
+//		perror("Error: Couldn't find program source file '%s'.", filePath);
+//		error = CL_INVALID_VALUE;
+//	} else {
+//		fseek(fp, 0, SEEK_END);
+//		size = ftell(fp);
+//		fseek(fp, 0, SEEK_SET);
+//		*buffer = new char[size];
+//		if(*buffer == NULL) {
+//			cout << "Error: Couldn't allocate " << size << " bytes for program source from file " << filePath << endl;
+//			error = CL_OUT_OF_HOST_MEMORY;
+//		} else {
+//			fread(*buffer, 1, size, fp);
+//		}
+//	}
+//	return error;
+//}
+
+template <typename T>
+void validateData(T* data, size_t size) {
+	cout << "\n[-] " << __func__ << ": " << __LINE__ << endl;
+
+	for(size_t i=0; i<size; ++i) {
+		if(i % 32 == 0)
+			cout << endl;
+		cout << data[i] << " ";
+	}
+	cout << endl;
+}
+
+void testGPU() {
+	// [2013] https://www.photoneray.com/opencl_01/
+	// https://zhuanlan.zhihu.com/p/53772179
+	cout << "\n[-] " << __func__ << ": " << __LINE__ << endl;
+
+	cl_int error = CL_SUCCESS;
+
+	// platform
+	cl_uint numOfPlatforms = 0;
+	error = clGetPlatformIDs(0, NULL, &numOfPlatforms);
+	CHECK_ERROR(error, "platform number");
+	cout << "Number of available platforms:\t" << numOfPlatforms << endl;
+
+	cl_platform_id* platforms = new cl_platform_id[numOfPlatforms];
+	error = clGetPlatformIDs(numOfPlatforms, platforms, NULL);
+	CHECK_ERROR(error, "get platforms")
+
+	// device
+	cl_uint numOfDevices = 0;
+	error = clGetDeviceIDs(platforms[0], CL_DEVICE_TYPE_GPU, 0, NULL, &numOfDevices);
+	CHECK_ERROR(error, "device number");
+	cout << "Number of available devices:\t" << numOfDevices << endl;
+
+	cl_device_id* devices = new cl_device_id[numOfDevices];
+	error = clGetDeviceIDs(platforms[0], CL_DEVICE_TYPE_GPU, numOfDevices, devices, NULL);
+	CHECK_ERROR(error, "get devices");
+
+	// context
+	//cl_context context = clCreateContext(NULL, 1, &devices[0], &callback, NULL, &error);
+	cl_context context = clCreateContext(NULL, numOfDevices, devices, &callback, NULL, &error);
+	CHECK_ERROR(error, "create context");
+
+	// command queue
+	//#pragma warning( disable : 4996 )
+	cl_command_queue queue = clCreateCommandQueue(context, devices[0], CL_QUEUE_PROFILING_ENABLE, &error);
+	CHECK_ERROR(error, "command queue");
+
+	// program
+	cl_uint numOfFiles = 1;
+	char* buffer[numOfFiles];
+	size_t sizes[numOfFiles];
+	const char* sources[] = {"hello_world.cl"};
+
+	//loadProgramSource(source, buffer, size);
+	//ReadSourceFromFile(source, &buffer, size);
+	loadProgramSource(sources, numOfFiles, buffer, sizes);
+	//cout << "loadProgramSource:\t" << sources << ", sizes: " << sizes << endl;
+
+	cl_program program = clCreateProgramWithSource(context, numOfFiles, (const char**)buffer, sizes, &error);
+	CHECK_ERROR(error, "create program");
+
+	const char options[] = "-cl-finite-math-only -cl-no-signed-zeros";
+	//const char options[] = "";
+	cout << "Build program successfully!" << endl;
+	error = clBuildProgram(program, 1, &devices[0], options, NULL, NULL);
+	//error = clBuildProgram(program, 0, NULL, NULL, NULL, NULL);
+	CHECK_ERROR(error, "build program");
+	if(error != CL_SUCCESS) {
+		size_t log_size = 0;
+		clGetProgramBuildInfo(program, devices[0], CL_PROGRAM_BUILD_LOG, 0, NULL, &log_size);
+		char program_log[log_size + 1];
+		clGetProgramBuildInfo(program, devices[0], CL_PROGRAM_BUILD_LOG, log_size+1, program_log, NULL);
+		program_log[log_size] = 0;
+		cout << "\n=== Error === \n\n" << program_log << "\n=============" << endl;
+		exit(1);
+	}
+
+	// kernel
+	cl_kernel kernel = clCreateKernel(program, "hello_world", &error);
+	CHECK_ERROR(error, "create kernel");
+
+	// buffer
+	size_t bufferSize = 64;
+	//size_t bufferSize = 1024;
+	//uchar A[bufferSize];
+	//uchar B[bufferSize];
+	//uchar C[bufferSize];
+	float A[bufferSize];
+	float B[bufferSize];
+	float C[bufferSize];
+	for(size_t i=0; i<bufferSize; ++i) {
+		A[i] = i + 1;
+		B[i] = bufferSize - i;
+		C[i] = 0;
+	}
+	validateData(A, bufferSize);
+	validateData(B, bufferSize);
+	validateData(C, bufferSize);
+	//cl_mem a = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, sizeof(uchar) * bufferSize, 0, &error);
+	//cl_mem a = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, sizeof(uchar) * bufferSize, A, &error);
+	//cl_mem b = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, sizeof(uchar) * bufferSize, B, &error);
+	//cl_mem result = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, sizeof(uchar) * bufferSize, C, &error);
+	cl_mem a = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, sizeof(float) * bufferSize, A, &error);
+	cl_mem b = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, sizeof(float) * bufferSize, B, &error);
+	cl_mem result = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, sizeof(float) * bufferSize, C, &error);
+
+	// kernel args
+	clSetKernelArg(kernel, 0, sizeof(cl_mem), (void*) &a);
+	clSetKernelArg(kernel, 1, sizeof(cl_mem), (void*) &b);
+	clSetKernelArg(kernel, 2, sizeof(cl_mem), (void*) &result);
+
+	// enqueue way1
+	//error = clEnqueueTask(queue, kernel, 0, NULL, NULL);
+	//CHECK_ERROR(error, "enqueue task");
+
+	// enqueue way2
+	size_t globalThreads[] = {bufferSize,1};
+	size_t localThreads[]  = {32,1};
+	error = clEnqueueNDRangeKernel(queue, kernel, 2, NULL, globalThreads, localThreads, 0, NULL, NULL);
+	CHECK_ERROR(error, "enqueue NDRange");
+
+	cout << "Enqueue task successfully!" << endl;
+
+	// read result
+	//uchar resultData[bufferSize];
+	float resultData[bufferSize];
+	//error = clEnqueueReadBuffer(queue, result, CL_TRUE, 0, sizeof(uchar) * bufferSize, resultData, 0, NULL, NULL);
+	error = clEnqueueReadBuffer(queue, result, CL_TRUE, 0, sizeof(uint) * bufferSize, resultData, 0, NULL, NULL);
+	CHECK_ERROR(error, "read buffer");
+	cout << "Read buffer successfully!" << endl;
+
+	error = clFinish(queue);
+	CHECK_ERROR(error, "finish queue");
+	validateData(resultData, bufferSize);
+}
+
 int main() {
-	printf("[-] %s: %d\n", __func__, __LINE__);
+	printf("\n[-] %s: %d\n", __func__, __LINE__);
 	clinfo();
+
+	testGPU();
 	return 0;
 }
